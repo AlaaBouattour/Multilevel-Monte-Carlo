@@ -1,0 +1,105 @@
+\documentclass{article}
+\usepackage{amsmath, amssymb, graphicx}
+\usepackage{geometry}
+\geometry{margin=1in}
+\title{Multilevel Monte Carlo (MLMC)}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+Monte Carlo (MC) methods are widely used to estimate expectations $\mathbb{E}[P]$ when the underlying distribution is complicated or unknown analytically.
+However, standard MC can be computationally expensive, especially when high accuracy is required.\newline
+
+Multilevel Monte Carlo (MLMC) methods, introduced by Mike Giles in 2008, improve the efficiency of Monte Carlo simulations by combining multiple levels of discretization, significantly reducing the computational cost while maintaining a given accuracy.
+
+\section{Principle of MLMC}
+Instead of approximating $\mathbb{E}[P]$ directly, MLMC decomposes it into a sum of corrections between levels:
+
+\begin{equation}
+\mathbb{E}[P_L] = \mathbb{E}[P_0] + \sum_{l=1}^L \mathbb{E}[P_l - P_{l-1}]
+\end{equation}
+
+where:
+\begin{itemize}
+  \item $P_l$ is the estimator at level $l$ (typically, finer discretization means larger $l$).
+  \item $P_0$ is a very coarse, cheap approximation.
+  \item $P_l - P_{l-1}$ is a "correction" between two consecutive levels.
+\end{itemize}
+
+Each term is estimated independently with a Monte Carlo estimator.
+
+\section{Variance and Cost Balancing}
+The key idea is to:
+\begin{itemize}
+  \item Use \textbf{many cheap samples} at coarse levels (where variance is high but cost is low), and
+  \item Use \textbf{fewer expensive samples} at fine levels (where variance is small but cost is high).
+\end{itemize}
+
+Thus, the MLMC estimator is:
+
+\begin{equation}
+\hat{P}^{\text{MLMC}} = \sum_{l=0}^{L} \frac{1}{N_l} \sum_{i=1}^{N_l} (P_l^{(i)} - P_{l-1}^{(i)})
+\end{equation}
+
+where $N_l$ is the number of samples at level $l$.
+
+\section{MLMC Complexity}
+Suppose:
+\begin{itemize}
+  \item The bias $\mathbb{E}[P_L - P] \sim \mathcal{O}(2^{-\alpha L})$,
+  \item The variance $\mathbb{V}[P_l - P_{l-1}] \sim \mathcal{O}(2^{-\beta l})$,
+  \item The cost per sample $C_l \sim \mathcal{O}(2^{\gamma l})$.
+\end{itemize}
+
+Then the total cost to achieve RMS error $\varepsilon$ satisfies:
+
+\begin{equation}
+\text{Cost}_{\text{MC}} \sim \varepsilon^{-3}, \quad \text{Cost}_{\text{MLMC}} \sim \begin{cases}
+\varepsilon^{-2} & \text{if } \beta > \gamma, \\
+\varepsilon^{-2} (\log \varepsilon)^2 & \text{if } \beta = \gamma, \\
+\varepsilon^{-2-\frac{\gamma-\beta}{\alpha}} & \text{if } \beta < \gamma.
+\end{cases}
+\end{equation}
+
+Typically, for SDE discretizations (Euler scheme), $\alpha=1$, $\beta=1$, $\gamma=1$ and MLMC reduces cost from $\varepsilon^{-3}$ to $\varepsilon^{-2}$.
+
+\section{Algorithm Overview}
+
+\begin{enumerate}
+  \item Set a minimum level $L_{\text{min}}$, maximum level $L_{\text{max}}$, initial samples $N_0$, and desired tolerance $\varepsilon$.
+  \item Initialize sample statistics for each level: sums of $Y_l$ and $Y_l^2$.
+  \item Estimate variances $V_l$ and costs $C_l$ for each level.
+  \item Allocate number of samples $N_l$ optimally based on $V_l$, $C_l$, and $\varepsilon$.
+  \item If the bias (estimated from $\mathbb{E}[P_L - P_{L-1}]$) is too large, increase $L$.
+  \item Repeat until both the variance and bias criteria are satisfied.
+\end{enumerate}
+
+\section{Advantages of MLMC}
+\begin{itemize}
+  \item \textbf{Massive speedup}: MLMC drastically reduces computational cost for small tolerances.
+  \item \textbf{Flexibility}: MLMC applies to any problem where coarse and fine simulations can be coupled.
+  \item \textbf{Error control}: MLMC naturally balances bias and variance.
+\end{itemize}
+
+\section{Example: European Call Option under Black-Scholes}
+\begin{itemize}
+  \item $S_t$ follows a Geometric Brownian Motion:
+
+\begin{equation}
+\mathrm{d}S_t = r S_t \mathrm{d}t + \sigma S_t \mathrm{d}W_t
+\end{equation}
+
+  \item Payoff: $P = e^{-rT} (S_T - K)^+$.
+  \item MLMC simulates $S_T$ at different time discretizations.
+\end{itemize}
+
+Using MLMC, the cost to achieve an RMS error of $10^{-3}$ can be reduced by a factor of $100$ compared to plain Monte Carlo.
+
+\section{Conclusion}
+Multilevel Monte Carlo is a powerful method that intelligently reduces the variance and computational cost by mixing simulations at different accuracies.\newline
+It is particularly useful for financial engineering, uncertainty quantification, and SDE simulations.
+
+\end{document}
