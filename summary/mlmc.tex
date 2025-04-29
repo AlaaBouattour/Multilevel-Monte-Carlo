@@ -86,17 +86,23 @@ Typically, for SDE discretizations (Euler scheme), $\alpha=1$, $\beta=1$, $\gamm
 
 \section{Example: European Call Option under Black-Scholes}
 \begin{itemize}
-  \item $S_t$ follows a Geometric Brownian Motion:
+  \item Under the risk-neutral measure, the asset price $S_t$ follows a Geometric Brownian Motion:
+  \begin{equation}
+  \mathrm{d}S_t = r S_t \,\mathrm{d}t + \sigma S_t \,\mathrm{d}W_t
+  \end{equation}
+  where:
+  \begin{itemize}
+    \item $r$ is the risk-free rate,
+    \item $\sigma$ is the volatility,
+    \item $W_t$ is a standard Brownian motion.
+  \end{itemize}
 
-\begin{equation}
-\mathrm{d}S_t = r S_t \mathrm{d}t + \sigma S_t \mathrm{d}W_t
-\end{equation}
+  \item The European call option payoff is: $P = e^{-rT} (S_T - K)^+$.
 
-  \item Payoff: $P = e^{-rT} (S_T - K)^+$.
-  \item MLMC simulates $S_T$ at different time discretizations.
+  \item MLMC estimates $\mathbb{E}[P]$ by simulating $S_T$ under multiple time discretizations and computing corrections between coarse and fine approximations of the payoff.
 \end{itemize}
 
-Using MLMC, the cost to achieve an RMS error of $10^{-3}$ can be reduced by a factor of $100$ compared to plain Monte Carlo.
+Using MLMC, the cost to achieve an RMS error of $10^{-3}$ can be reduced by a factor of \textbf{1000} compared to plain Monte Carlo.
 
 \section{Conclusion}
 Multilevel Monte Carlo is a powerful method that intelligently reduces the variance and computational cost by mixing simulations at different accuracies.\newline
