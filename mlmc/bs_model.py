@@ -43,5 +43,6 @@ def make_bs_level_fn(S0: float, r: float, sigma: float, T: float,
                 S_c *= np.exp(drift_c + sigma*dWc[:, i])
             pc = math.exp(-r*T)*payoff(S_c)
             Y = pf - pc
-        return np.array([Y.sum(), (Y**2).sum()]), N*M
+            #here we assume that cost for each time step costs 1 unit of computation, and we simulate all steps explicitly.
+        return np.array([Y.sum(), (Y**2).sum()]), N*M 
     return level_fn

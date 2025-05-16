@@ -47,7 +47,7 @@ Thus, the MLMC estimator is:
 where $N_l$ is the number of samples at level $l$.
 
 \section{MLMC Complexity}
-Suppose:
+Let $\varepsilon $ is the target root mean square (RMS) error. Suppose:
 \begin{itemize}
   \item The bias $\mathbb{E}[P_L - P] \sim \mathcal{O}(2^{-\alpha L})$,
   \item The variance $\mathbb{V}[P_l - P_{l-1}] \sim \mathcal{O}(2^{-\beta l})$,
@@ -102,7 +102,7 @@ Typically, for SDE discretizations (Euler scheme), $\alpha=1$, $\beta=1$, $\gamm
   \item MLMC estimates $\mathbb{E}[P]$ by simulating $S_T$ under multiple time discretizations and computing corrections between coarse and fine approximations of the payoff.
 \end{itemize}
 
-Using MLMC, the cost to achieve an RMS error of $10^{-3}$ can be reduced by up to a factor of \textbf{1000} compared to plain Monte Carlo. While the optimal complexity is $\mathcal{O}(\varepsilon^{-2})$ when the variance decays faster than the cost increases ($\beta > \gamma$), in the typical case where $\beta = \gamma = 1$, the complexity becomes $\mathcal{O}(\varepsilon^{-2} (\log \varepsilon)^2)$ — still significantly better than standard Monte Carlo’s $\mathcal{O}(\varepsilon^{-3})$.
+Using MLMC, the cost to achieve an RMS error can be reduced by up to a factor of \textbf{10} compared to plain Monte Carlo. While the optimal complexity is $\mathcal{O}(\varepsilon^{-2})$ when the variance decays faster than the cost increases ($\beta > \gamma$), in the typical case where $\beta = \gamma = 1$, the complexity becomes $\mathcal{O}(\varepsilon^{-2} (\log \varepsilon)^2)$ — still significantly better than standard Monte Carlo’s $\mathcal{O}(\varepsilon^{-3})$.
 
 \section{Conclusion}
 Multilevel Monte Carlo is a powerful method that intelligently reduces the variance and computational cost by mixing simulations at different accuracies.\newline
