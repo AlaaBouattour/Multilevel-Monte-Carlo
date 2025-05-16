@@ -125,7 +125,7 @@ class C_MLMC:
     def _pilot_cluster(self, level: int):
         # Run N0 pilot samples with details
         Y_arr, details, cost_pilot = self._f(level, self.N0, return_details=True)
-        # Bulk sums for pilot
+        # Bulk sums for pilot 
         sums_pilot = np.array([Y_arr.sum(), (Y_arr**2).sum()])
         # Build feature matrix
         feats = np.vstack([self.feature_fn(d) for d in details])

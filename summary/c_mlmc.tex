@@ -1,0 +1,98 @@
+\documentclass{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{float}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{booktabs}
+
+\title{Clustered Multilevel Monte Carlo (C-MLMC)}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Problem Setup and Notation}
+We wish to estimate \(\mathbb{E}[P]\) under an SDE via MLMC.  Let
+\[
+P_\ell = P\bigl(S_T^{(\ell)}\bigr),\quad
+\Delta P_\ell = 
+\begin{cases}
+P_0, & \ell=0,\\
+P_\ell - P_{\ell-1}, & \ell\ge1.
+\end{cases}
+\]
+Classic MLMC chooses numbers \(N_\ell\) of samples at each level \(\ell\) to control the RMS error \(\varepsilon\), using
+\[
+V_\ell = \mathrm{Var}\bigl[\Delta P_\ell\bigr],\qquad
+C_\ell = \text{cost per sample at level }\ell,
+\]
+and allocates
+\[
+N_\ell
+\;\propto\;
+\sqrt{\frac{V_\ell}{C_\ell}}
+\quad\text{subject to}\quad
+\sum_{\ell=0}^L\frac{V_\ell}{N_\ell}\le (1-\theta)\,\varepsilon^2.
+\]
+
+\section{Added Value: Clustering for Variance Reduction}
+In the digital‐option example, most \(\Delta P_\ell\) are zero except for rare “boundary” paths.  Blind MLMC wastes effort on the sea of zeros.  Our C-MLMC enhances MLMC by:
+\begin{itemize}
+  \item \textbf{Pilot sampling} to learn where \(\Delta P_\ell\) is nonzero.
+  \item \textbf{Feature extraction} from each path’s \texttt{details} (e.g.\ distance to strike).
+  \item \textbf{K-means clustering} of these features into \(n_c\) clusters.
+  \item \textbf{Per-cluster variance} estimates \(V_{\ell,c}\) to identify “high-impact” clusters.
+  \item \textbf{Stratified allocation} of the usual MLMC extra samples \(dN_\ell\) across clusters.
+\end{itemize}
+
+\section{C-MLMC Algorithm}
+\begin{algorithm}[H]
+\caption{Clustered MLMC Estimator}
+\label{alg:cmlmc}
+\begin{algorithmic}[1]
+\REQUIRE level function \(f(\ell,N,\texttt{return\_details})\), feature map \(\varphi\), tolerance \(\varepsilon\), pilot size \(N_0\), clusters \(n_c\)
+\ENSURE estimate \(\hat{P}\)
+\vspace{1ex}
+\STATE Initialize \(L \leftarrow L_{\min},\;\theta\in(0,1)\)
+\STATE Initialize arrays \(N_\ell,\;S_\ell,\;C_\ell,\;V_{\ell,c}\) for \(\ell=0,\dots,L\)
+\WHILE{not converged}
+  \FOR{\(\ell=0\) \TO \(L\)} 
+    \IF{cluster info at \(\ell\) not yet computed}
+      \STATE Run pilot: \((Y_i,\,d_i)_{i=1}^{N_0}\gets f(\ell,N_0,\texttt{true})\)
+      \STATE Compute features \(\mathbf{f}_i=\varphi(d_i)\)
+      \STATE Fit K-means on \(\{\mathbf{f}_i\}\to\) labels \(\{c_i\}\)
+      \FOR{\(c=1\) \TO \(n_c\)} 
+        \STATE \(V_{\ell,c}\leftarrow\mathrm{Var}(\{Y_i: c_i=c\})\)
+      \ENDFOR
+    \ENDIF
+  \ENDFOR
+  \STATE Compute total variances \(V_\ell=\sum_{c}V_{\ell,c}\)
+  \STATE Compute costs \(C_\ell\) and allocation \(N_\ell\propto\sqrt{V_\ell/C_\ell}\)
+  \STATE Compute extra samples \(dN_\ell=N_\ell - \text{used}_\ell\)
+  \FOR{\(\ell=0\) \TO \(L\)}
+    \IF{\(dN_\ell>0\)}
+      \STATE Split \(dN_\ell\to\{dN_{\ell,c}\}\) proportional to \(V_{\ell,c}\)
+      \FOR{\(c=1\) \TO \(n_c\)} 
+        \STATE Draw cluster‐wise: simulate until \(dN_{\ell,c}\) samples in cluster \(c\)
+        \STATE Accumulate sums and costs
+      \ENDFOR
+    \ENDIF
+  \ENDFOR
+  \STATE Check bias remainder; if too large, increment \(L\) and reinitialize for new level
+\ENDWHILE
+\STATE \(\hat{P} \leftarrow \sum_{\ell=0}^L \frac{S_\ell}{N_\ell}\)
+\RETURN \(\hat{P}\)
+\end{algorithmic}
+\end{algorithm}
+
+\section{Why Clustering Helps}
+\begin{itemize}
+  \item \textbf{Detects Rare Events:} Clusters with large \(V_{\ell,c}\) correspond to paths near payoff discontinuities.
+  \item \textbf{Focuses Effort:} Stratification directs samples to high-impact clusters, reducing overall variance.
+  \item \textbf{Preserves MLMC Guarantees:} We still meet both bias and variance tolerances.
+\end{itemize}
+
+\end{document}
