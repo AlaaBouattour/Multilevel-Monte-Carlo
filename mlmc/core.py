@@ -19,23 +19,25 @@ class MLMC:
     """
 
     def __init__(self, sde_step_fn, *, Lmin: int = 2, Lmax: int = 10,
-                 alpha0: float = 0.0, beta0: float = 0.0, gamma0: float = 0.0):
+                 alpha0: float = 0.0, beta0: float = 0.0, gamma0: float = 0.0, N0: int = 1024,
+                 theta: float=0.25):
         if Lmin < 2 or Lmax < Lmin:
             raise ValueError("Need Lmin ≥ 2 and Lmax ≥ Lmin")
         self._f = sde_step_fn
         self.Lmin, self.Lmax = Lmin, Lmax
         self.alpha0, self.beta0, self.gamma0 = alpha0, beta0, gamma0
+        self.N0 = N0
+        self.theta = theta
 
     # ------------------------------------------------------------------
-    def estimate(self, eps: float, N0: int = 1024):
+    def estimate(self, eps: float):
         """Return (price, Nl, Cl, total_cost) for the given RMS tolerance `eps`."""
         alpha = max(0, self.alpha0); beta = max(0, self.beta0); gamma = max(0, self.gamma0)
-        theta = 0.25  # split of error budget between bias/MC
         L = self.Lmin
         Nl   = np.zeros(L+1)
         suml = np.zeros((2, L+1))
         costl = np.zeros(L+1)
-        dNl  = N0*np.ones(L+1)
+        dNl  = self.N0*np.ones(L+1)
 
         while dNl.sum() > 0:
             # 1) Simulate extra samples level by level
@@ -74,7 +76,7 @@ class MLMC:
                             np.linalg.lstsq(A, np.log2(Cl[1:]), rcond=None)[0][0])
 
             # 4) Optimal allocation
-            Ns  = np.ceil(np.sqrt(Vl/Cl) * np.sum(np.sqrt(Vl*Cl)) / ((1-theta)*eps**2))
+            Ns  = np.ceil(np.sqrt(Vl/Cl) * np.sum(np.sqrt(Vl*Cl)) / ((1-self.theta)*eps**2))
             dNl = np.maximum(0, Ns - Nl)
 
             # 5) Weak‑error check – add level if bias too large
@@ -82,7 +84,7 @@ class MLMC:
                 tail = list(range(min(3, L)))
                 remainder = (np.max(ml[[L-x for x in tail]]/2**(np.array(tail)*alpha))
                              / (2**alpha - 1))
-                if remainder > np.sqrt(theta)*eps:
+                if remainder > np.sqrt(self.theta)*eps:
                     if L == self.Lmax:
                         raise WeakConvergenceError("Increase Lmax to reach tolerance")
                     L += 1
@@ -91,7 +93,7 @@ class MLMC:
                     suml  = np.column_stack([suml, [0.0, 0.0]])
                     Cl    = np.append(Cl, Cl[-1]*2**gamma)
                     costl = np.append(costl, 0.0)
-                    Ns  = np.ceil(np.sqrt(Vl/Cl) * np.sum(np.sqrt(Vl*Cl)) / ((1-theta)*eps**2))
+                    Ns  = np.ceil(np.sqrt(Vl/Cl) * np.sum(np.sqrt(Vl*Cl)) / ((1-self.theta)*eps**2))
                     dNl = np.maximum(0, Ns - Nl)
 
         price = np.sum(suml[0]/Nl)
@@ -112,6 +114,7 @@ class C_MLMC:
         gamma0: float = 0.0,
         n_clusters: int = 4,
         N0: int = 1024,
+        theta: float = 0.25,
     ):
         if Lmin < 2 or Lmax < Lmin:
             raise ValueError("Need Lmin ≥ 2 and Lmax ≥ Lmin")
@@ -121,11 +124,16 @@ class C_MLMC:
         self.N0 = N0
         self.Lmin, self.Lmax = Lmin, Lmax
         self.alpha0, self.beta0, self.gamma0 = alpha0, beta0, gamma0
+        self.theta = theta
+
+        # placeholders for clustering info
+        self.V_cluster_levels = None
+        self.kmeans_levels = None
 
     def _pilot_cluster(self, level: int):
         # Run N0 pilot samples with details
         Y_arr, details, cost_pilot = self._f(level, self.N0, return_details=True)
-        # Bulk sums for pilot 
+        # Bulk sums for pilot
         sums_pilot = np.array([Y_arr.sum(), (Y_arr**2).sum()])
         # Build feature matrix
         feats = np.vstack([self.feature_fn(d) for d in details])
@@ -137,7 +145,7 @@ class C_MLMC:
             np.var(Y_arr[labels == c], ddof=1) if np.any(labels == c) else 0.0
             for c in range(self.n_clusters)
         ])
-        return sums_pilot, cost_pilot, V_cluster, kmeans
+        return sums_pilot, cost_pilot, V_cluster, kmeans, feats, labels
 
     def estimate(self, eps: float):
         """Return (price, Nl, Cl, total_cost) for RMS tolerance eps."""
@@ -145,7 +153,6 @@ class C_MLMC:
         alpha = max(0, self.alpha0)
         beta  = max(0, self.beta0)
         gamma = max(0, self.gamma0)
-        theta = 0.25
         L = self.Lmin
         Nl   = np.zeros(L+1, dtype=float)
         suml = np.zeros((2, L+1), dtype=float)
@@ -153,23 +160,28 @@ class C_MLMC:
         dNl  = self.N0 * np.ones(L+1, dtype=float)
 
         # storage for pilot clustering info
-        V_cluster_levels = [None] * (self.Lmax + 1)
-        kmeans_levels   = [None] * (self.Lmax + 1)
+        self.V_cluster_levels = [None] * (self.Lmax + 1)
+        self.kmeans_levels   = [None] * (self.Lmax + 1)
+        # also store pilot features and labels for visualization
+        self._cluster_features = [None] * (self.Lmax + 1)
+        self._cluster_labels   = [None] * (self.Lmax + 1)
 
         while dNl.sum() > 0:
             # 1) Pilot & fold into sums
             for l in range(L+1):
-                if V_cluster_levels[l] is None:
-                    sums_p, cost_p, V_c, km = self._pilot_cluster(l)
+                if self.V_cluster_levels[l] is None:
+                    sums_p, cost_p, V_c, km, feats, labs = self._pilot_cluster(l)
                     Nl[l]    += self.N0
                     suml[:,l]+= sums_p
                     costl[l] += cost_p
-                    V_cluster_levels[l] = V_c
-                    kmeans_levels[l]    = km
+                    self.V_cluster_levels[l] = V_c
+                    self.kmeans_levels[l]    = km
+                    self._cluster_features[l] = feats
+                    self._cluster_labels[l]   = labs
 
             # 2) Empirical stats
             ml = np.abs(suml[0] / Nl)
-            Vl_total = np.array([V_cluster_levels[l].sum() for l in range(L+1)])
+            Vl_total = np.array([self.V_cluster_levels[l].sum() for l in range(L+1)])
             Cl = costl / Nl
 
             # safe copies for regression
@@ -195,7 +207,7 @@ class C_MLMC:
 
             # 4) Optimal total allocation per level
             Ns  = np.ceil(np.sqrt(Vl_total/Cl) * np.sum(np.sqrt(Vl_total*Cl))
-                          / ((1-theta)*eps**2))
+                          / ((1-self.theta)*eps**2))
             dNl = np.maximum(0, Ns - Nl)
 
             # 5) Stratify extra samples by cluster
@@ -204,7 +216,7 @@ class C_MLMC:
                 n_extra = int(dNl[l])
                 if n_extra <= 0:
                     continue
-                V_c = V_cluster_levels[l]
+                V_c = self.V_cluster_levels[l]
                 if V_c.sum() == 0:
                     weights = np.ones(self.n_clusters) / self.n_clusters
                 else:
@@ -215,7 +227,7 @@ class C_MLMC:
 
             # 6) Simulate extra samples cluster-wise
             for l, alloc in dNlc.items():
-                km      = kmeans_levels[l]
+                km      = self.kmeans_levels[l]
                 for c, n_c in enumerate(alloc):
                     if n_c <= 0:
                         continue
@@ -242,7 +254,7 @@ class C_MLMC:
                 tail = list(range(min(3, L)))
                 remainder = (np.max(ml[[L-x for x in tail]]/2**(np.array(tail)*alpha))
                              / (2**alpha - 1))
-                if remainder > math.sqrt(theta)*eps:
+                if remainder > math.sqrt(self.theta)*eps:
                     if L == self.Lmax:
                         raise WeakConvergenceError("Increase Lmax to reach tolerance")
                     # extend arrays
@@ -250,10 +262,34 @@ class C_MLMC:
                     Nl   = np.pad(Nl,   (0,1), 'constant')
                     suml = np.pad(suml, ((0,0),(0,1)), 'constant')
                     costl= np.pad(costl,(0,1), 'constant')
-                    V_cluster_levels[L] = None
-                    kmeans_levels[L]    = None
+                    self.V_cluster_levels.append(None)
+                    self.kmeans_levels.append(None)
+                    self._cluster_features.append(None)
+                    self._cluster_labels.append(None)
                     continue
 
         # Final price
         price = np.sum(suml[0] / Nl)
         return price, Nl.astype(int), Cl, costl.sum()
+
+    def get_clusters(self):
+        """
+        Return clustering information for each level after estimate().
+        Returns a dict:
+          level -> {
+            'model': KMeans instance,
+            'features': array of pilot features,
+            'labels': array of pilot labels
+          }
+        """
+        if self.kmeans_levels is None:
+            raise ValueError("No clustering information available. Run estimate() first.")
+        clusters_info = {}
+        for lvl, km in enumerate(self.kmeans_levels):
+            if km is not None:
+                clusters_info[lvl] = {
+                    'model': km,
+                    'features': self._cluster_features[lvl],
+                    'labels': self._cluster_labels[lvl]
+                }
+        return clusters_info
