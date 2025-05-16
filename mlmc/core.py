@@ -43,11 +43,18 @@ class MLMC:
                 Nl[l]      += dNl[l]
                 suml[:, l] += sums
                 costl[l]   += cost
-
             # 2) Empirical stats
             ml = np.abs(suml[0]/Nl)
             Vl = np.maximum(0.0, suml[1]/Nl - ml**2)
             Cl = costl/Nl
+
+            # ——————————————————————————————————————
+            # Prepare safe copies for the log-regression (avoid log2(0))
+            eps_floor = 1e-12
+            ml_safe = np.maximum(ml[1:], eps_floor)
+            Vl_safe = np.maximum(Vl[1:], eps_floor)
+            # ——————————————————————————————————————
+
             for l in range(3, L+2):  # guard against zero variance on small samples
                 ml[l-1] = max(ml[l-1], 0.5*ml[l-2]/2**alpha)
                 Vl[l-1] = max(Vl[l-1], 0.5*Vl[l-2]/2**beta)
@@ -55,13 +62,14 @@ class MLMC:
             # 3) Regression for alpha, beta, gamma if needed
             if self.alpha0 <= 0 and L >= 2:
                 A = np.vstack([np.arange(1, L+1), np.ones(L)]).T
-                alpha = max(0.5, -np.linalg.lstsq(A, np.log2(ml[1:]), rcond=None)[0][0])
+                alpha = max(0.5, -np.linalg.lstsq(A, np.log2(ml_safe), rcond=None)[0][0])
             if self.beta0 <= 0 and L >= 2:
                 A = np.vstack([np.arange(1, L+1), np.ones(L)]).T
-                beta  = max(0.5, -np.linalg.lstsq(A, np.log2(Vl[1:]), rcond=None)[0][0])
+                beta  = max(0.5, -np.linalg.lstsq(A, np.log2(Vl_safe), rcond=None)[0][0])
             if self.gamma0 <= 0 and L >= 2:
                 A = np.vstack([np.arange(1, L+1), np.ones(L)]).T
-                gamma = max(0.5,  np.linalg.lstsq(A, np.log2(Cl[1:]), rcond=None)[0][0])
+                gamma = max(0.5,
+                            np.linalg.lstsq(A, np.log2(Cl[1:]), rcond=None)[0][0])
 
             # 4) Optimal allocation
             Ns  = np.ceil(np.sqrt(Vl/Cl) * np.sum(np.sqrt(Vl*Cl)) / ((1-theta)*eps**2))
@@ -86,3 +94,6 @@ class MLMC:
 
         price = np.sum(suml[0]/Nl)
         return price, Nl.astype(int), Cl, costl.sum()
+    
+
+    
