@@ -10,7 +10,7 @@ Efficient Monte Carlo estimation using multilevel sampling, based on the method 
 |-------------|--------------------------------------------------------------------------|
 | `mlmc/`     | Core MLMC implementation (algorithm, Black-Scholes models, payoff functions) |
 | `tests/`    | Simple tests to validate MLMC behavior                                   |
-| `examples/` | Ready-to-run scripts comparing MC and MLMC                               |
+| `examples/` | Ready-to-run examples                                                   |
 | `summary/`  | Theoretical background and technical notes from academic papers         |
 
 ---
