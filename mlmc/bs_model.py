@@ -2,9 +2,7 @@
 import numpy as np, math
 from typing import Callable
 
-__all__ = ["make_bs_level_fn", "bs_exact_call", "bs_exact_put"]
-
-# analytic prices -------------------------------------------------------------
+# analytic prices 
 
 def _norm_cdf(x):
     return 0.5*(1+math.erf(x/math.sqrt(2)))
@@ -17,58 +15,131 @@ def bs_exact_call(S0, K, r, sigma, T):
 def bs_exact_put(S0, K, r, sigma, T):
     return bs_exact_call(S0, K, r, sigma, T) - S0 + K*math.exp(-r*T)
 
-# low‑level Y_l generator ------------------------------------------------------
+# low‑level Y_l generators 
 
-def make_bs_level_fn(S0: float, r: float, sigma: float, T: float,
-                     payoff: Callable[[np.ndarray], np.ndarray]):
-    """
-    Return a function level_fn(l, N, return_details=False) that:
-     - if return_details=False: returns (sumY, sumY2), cost
-     - if return_details=True: returns Y_array, details_list, cost
+class BSLevelFunction:
+    def __init__(self, S0: float, r: float, sigma: float, T: float, payoff: Callable[[np.ndarray], np.ndarray]):
+        self.S0 = S0
+        self.r = r
+        self.sigma = sigma
+        self.T = T
+        self.payoff = payoff
 
-    `details_list` is a list of dicts with keys 'S_fine', 'pf_value'
-    (and for l>0 also 'S_coarse', 'pc_value').
-    """
-    def level_fn(l: int, N: int, return_details: bool = False):
+    def simulate(self, l: int, N: int, return_details: bool = False, rng=None):
+        raise NotImplementedError("Subclasses must implement simulate()")
+
+
+class EulerBSLevelFunction(BSLevelFunction):
+    def simulate(self, l: int, N: int, return_details: bool = False, verbose=True, rng=None):
+        rng = rng or np.random.default_rng()
         M = 2**l
-        h = T / M
-        dW = np.random.randn(N, M) * math.sqrt(h)
-        drift = (r - 0.5 * sigma**2) * h
+        h = self.T / M
+        dW = rng.normal(0.0, np.sqrt(h), size=(N, M))
 
-        # Simulate fine path
-        S_f = np.full(N, S0, dtype=float)
+        S_f = np.full(N, self.S0)
         for i in range(M):
-            S_f *= np.exp(drift + sigma * dW[:, i])
-        pf = np.exp(-r * T) * payoff(S_f)
+            S_f += S_f * ((self.r - 0.5 * self.sigma**2) * h + self.sigma * dW[:, i])
+        pf = np.exp(-self.r * self.T) * self.payoff(S_f)
 
-        # Simulate coarse path if needed
         if l == 0:
             pc = np.zeros_like(pf)
         else:
             dWc = dW[:, 0::2] + dW[:, 1::2]
             hc = 2 * h
-            S_c = np.full(N, S0, dtype=float)
-            drift_c = (r - 0.5 * sigma**2) * hc
+            S_c = np.full(N, self.S0)
             for i in range(M // 2):
-                S_c *= np.exp(drift_c + sigma * dWc[:, i])
-            pc = np.exp(-r * T) * payoff(S_c)
+                S_c += S_c * ((self.r - 0.5 * self.sigma**2) * hc + self.sigma * dWc[:, i])
+            pc = np.exp(-self.r * self.T) * self.payoff(S_c)
 
-        # Level increment
         Y = pf if l == 0 else (pf - pc)
         cost = N * M
 
+        if verbose:
+            print(f"Level {l}: mean={Y.mean():.4e}, std={Y.std():.4e}")
+
         if not return_details:
-            sumY  = Y.sum()
+            sumY = Y.sum()
             sumY2 = (Y**2).sum()
             return np.array([sumY, sumY2]), cost
         else:
-            details = []
-            for i in range(N):
-                d = {'S_fine': S_f[i], 'pf_value': pf[i]}
-                if l > 0:
-                    d['S_coarse'] = S_c[i]
-                    d['pc_value']   = pc[i]
-                details.append(d)
+            details = [{'S_fine': S_f[i], 'pf_value': pf[i],
+                        **({'S_coarse': S_c[i], 'pc_value': pc[i]} if l > 0 else {})} for i in range(N)]
             return Y, details, cost
 
-    return level_fn
+
+class GBMExactBSLevelFunction(BSLevelFunction):
+    def simulate(self, l: int, N: int, return_details: bool = False, verbose=True, rng=None):
+        rng = rng or np.random.default_rng()
+        M = 2**l
+        h = self.T / M
+        dW = rng.normal(0.0, np.sqrt(h), size=(N, M))
+
+        S_f = np.full(N, self.S0)
+        for i in range(M):
+            S_f *= np.exp((self.r - 0.5 * self.sigma**2) * h + self.sigma * dW[:, i])
+        pf = np.exp(-self.r * self.T) * self.payoff(S_f)
+
+        if l == 0:
+            pc = np.zeros_like(pf)
+        else:
+            dWc = dW[:, 0::2] + dW[:, 1::2]
+            hc = 2 * h
+            S_c = np.full(N, self.S0)
+            for i in range(M // 2):
+                S_c *= np.exp((self.r - 0.5 * self.sigma**2) * hc + self.sigma * dWc[:, i])
+            pc = np.exp(-self.r * self.T) * self.payoff(S_c)
+
+        Y = pf if l == 0 else (pf - pc)
+        cost = N * M
+
+        if verbose:
+            print(f"Level {l}: mean={Y.mean():.4e}, std={Y.std():.4e}")
+
+        if not return_details:
+            sumY = Y.sum()
+            sumY2 = (Y**2).sum()
+            return np.array([sumY, sumY2]), cost
+        else:
+            details = [{'S_fine': S_f[i], 'pf_value': pf[i],
+                        **({'S_coarse': S_c[i], 'pc_value': pc[i]} if l > 0 else {})} for i in range(N)]
+            return Y, details, cost
+
+
+class MilsteinBSLevelFunction(BSLevelFunction):
+    def simulate(self, l: int, N: int, return_details: bool = False, verbose=True, rng=None):
+        rng = rng or np.random.default_rng()
+        M = 2**l
+        h = self.T / M
+        dW = rng.normal(0.0, np.sqrt(h), size=(N, M))
+
+        S_f = np.full(N, self.S0)
+        for i in range(M):
+            Z = dW[:, i]
+            S_f += S_f * (self.r * h + self.sigma * Z + 0.5 * self.sigma**2 * (Z**2 - h))
+        pf = np.exp(-self.r * self.T) * self.payoff(S_f)
+
+        if l == 0:
+            pc = np.zeros_like(pf)
+        else:
+            dWc = dW[:, 0::2] + dW[:, 1::2]
+            hc = 2 * h
+            S_c = np.full(N, self.S0)
+            for i in range(M // 2):
+                Zc = dWc[:, i]
+                S_c += S_c * (self.r * hc + self.sigma * Zc + 0.5 * self.sigma**2 * (Zc**2 - hc))
+            pc = np.exp(-self.r * self.T) * self.payoff(S_c)
+
+        Y = pf if l == 0 else (pf - pc)
+        cost = N * M
+
+        if verbose:
+            print(f"Level {l}: mean={Y.mean():.4e}, std={Y.std():.4e}")
+
+        if not return_details:
+            sumY = Y.sum()
+            sumY2 = (Y**2).sum()
+            return np.array([sumY, sumY2]), cost
+        else:
+            details = [{'S_fine': S_f[i], 'pf_value': pf[i],
+                        **({'S_coarse': S_c[i], 'pc_value': pc[i]} if l > 0 else {})} for i in range(N)]
+            return Y, details, cost
