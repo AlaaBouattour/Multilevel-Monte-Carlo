@@ -8,6 +8,7 @@
 \usepackage{caption}
 \usepackage{booktabs}
 \usepackage{hyperref}
+\usepackage{bm}
 
 \title{Clustered Multilevel Monte Carlo (C-MLMC)}
 \date{\today}
@@ -16,7 +17,7 @@
 \maketitle
 
 \section{Problem Setup and Notation}
-We aim to estimate \( \mathbb{E}[P] \) for a path-dependent payoff \( P \), evaluated under an SDE model. Using the Multilevel Monte Carlo (MLMC) framework, we define estimators:
+We aim to estimate \( \mathbb{E}[P] \) for a path-dependent payoff \( P \) under an SDE model. Using the Multilevel Monte Carlo (MLMC) framework, we define level-wise differences:
 \[
 \Delta P_\ell =
 \begin{cases}
@@ -24,22 +25,22 @@ P_0, & \text{if } \ell = 0, \\
 P_\ell - P_{\ell-1}, & \text{if } \ell \ge 1.
 \end{cases}
 \]
-Let \( V_\ell = \mathrm{Var}[\Delta P_\ell] \), and \( C_\ell \) be the average cost per sample on level \( \ell \). Classical MLMC chooses
+Let \( V_\ell = \mathrm{Var}[\Delta P_\ell] \), and \( C_\ell \) be the average cost per sample on level \( \ell \). Classical MLMC chooses:
 \[
 N_\ell \propto \sqrt{\frac{V_\ell}{C_\ell}}
 \]
-to achieve RMSE \( \varepsilon \), with:
+to meet the MSE constraint:
 \[
 \sum_{\ell=0}^L \frac{V_\ell}{N_\ell} \le (1 - \theta)\varepsilon^2.
 \]
 
 \section{Motivation for Clustering}
-When the variance is highly concentrated in rare regions of the input space (e.g., digital or exotic options), naive sampling wastes budget on low-variance samples. The C-MLMC approach improves efficiency by:
+When the variance is concentrated in rare modes of the input space, uniform sampling becomes inefficient. C-MLMC improves efficiency by:
 \begin{itemize}
-  \item Extracting features from simulation metadata,
-  \item Clustering samples to identify variance modes,
-  \item Estimating per-cluster variance \( V_{\ell,c} \) and probabilities \( P_{\ell,c} \),
-  \item Allocating samples in proportion to \( \sqrt{P_{\ell,c} V_{\ell,c}} \).
+  \item Extracting features from simulation details,
+  \item Clustering samples via K-means into \( n_c \) variance modes,
+  \item Estimating per-cluster statistics \( (P_{\ell,c}, V_{\ell,c}) \),
+  \item Allocating samples proportional to \( \sqrt{P_{\ell,c} V_{\ell,c}} \).
 \end{itemize}
 
 \section{C-MLMC Algorithm}
@@ -48,51 +49,67 @@ When the variance is highly concentrated in rare regions of the input space (e.g
 \label{alg:cmlmc}
 \begin{algorithmic}[1]
 \REQUIRE Simulator \( f(\ell, N, \texttt{return\_details}) \), feature extractor \( \varphi \), tolerance \( \varepsilon \), pilot size \( N_0 \), clusters \( n_c \)
-\STATE Initialize \( L \leftarrow L_{\min},\;\theta \in (0,1) \)
+\STATE Initialize level count \( L \leftarrow L_{\min} \), precision control \( \theta \in (0,1) \)
 \FOR{each level \( \ell \le L \)}
-    \STATE Run pilot: \( \{(Y_i, d_i)\} \leftarrow f(\ell, N_0, \texttt{true}) \)
-    \STATE Compute features \( \phi_i = \varphi(d_i) \)
-    \STATE Cluster features using K-means into \( n_c \) clusters
-    \STATE Estimate cluster variances \( V_{\ell,c} \) and probabilities \( P_{\ell,c} \)
+    \STATE Run pilot: simulate \( \{(Y_i, d_i)\}_{i=1}^{N_0} \leftarrow f(\ell, N_0, \texttt{true}) \)
+    \STATE Extract features: \( \phi_i \leftarrow \varphi(d_i) \)
+    \STATE Cluster \( \{\phi_i\} \) into \( n_c \) clusters using K-means
+    \STATE Compute:
+    \[
+    P_{\ell,c} = \frac{\#\{\text{samples in cluster } c\}}{N_0}, \quad
+    V_{\ell,c} = \mathrm{Var}\left(Y_i \mid \phi_i \in \text{cluster } c\right)
+    \]
+    \STATE Store cluster-wise sums \( S_{\ell,c} = \sum Y_i \), and counts \( N_{\ell,c} \)
 \ENDFOR
+
 \WHILE{not converged}
-    \STATE Compute level variances \( V_\ell = \sum_c P_{\ell,c} V_{\ell,c} \)
-    \STATE Estimate level costs \( C_\ell \)
-    \STATE Allocate samples \( N_\ell \propto \sqrt{V_\ell / C_\ell} \)
-    \STATE Allocate cluster-wise \( N_{\ell,c} \propto \sqrt{P_{\ell,c} V_{\ell,c}} \)
-    \FOR{each cluster \( c \)}
+    \STATE Aggregate level stats: \( V_\ell = \sum_{c=1}^{n_c} P_{\ell,c} V_{\ell,c} \), \( C_\ell = \frac{\text{total cost}}{N_\ell} \)
+    \STATE Allocate level-wise samples: \( N_\ell \propto \sqrt{V_\ell / C_\ell} \)
+    \STATE Allocate cluster-wise samples:
+    \[
+    N_{\ell,c} \propto \sqrt{P_{\ell,c} V_{\ell,c}} \quad \text{s.t.} \quad \sum_c N_{\ell,c} = N_\ell
+    \]
+    \FOR{each level \( \ell > 0 \), cluster \( c \)}
         \STATE Sample until \( N_{\ell,c} \) accepted samples with cluster label \( c \)
-        \STATE Accumulate \( \sum Y \), \( \sum Y^2 \), update cost
+        \STATE Accumulate cluster sum \( S_{\ell,c} \leftarrow S_{\ell,c} + \sum Y_i \)
+        \STATE Update counts \( N_{\ell,c} \leftarrow N_{\ell,c} + \#\text{new samples} \)
     \ENDFOR
-    \STATE Bias check via extrapolation; if too large, increment \( L \)
+    \STATE Bias check: extrapolate tail bias using \( \widehat{\mathbb{E}}[\Delta P_\ell] \sim \mathcal{O}(2^{-\alpha \ell}) \); if large, increment \( L \)
 \ENDWHILE
-\STATE Output estimate \( \hat{P} = \sum_{\ell=0}^L \frac{1}{N_\ell} \sum_{i=1}^{N_\ell} Y_{\ell,i} \)
+
+\STATE Final estimator:
+\[
+\hat{P} = \frac{1}{N_0} \sum_{i=1}^{N_0} Y_{0,i} + \sum_{\ell = 1}^{L} \sum_{c=1}^{n_c} \frac{S_{\ell,c}}{N_{\ell,c}}
+\]
 \end{algorithmic}
 \end{algorithm}
 
-\section{Why \(\sqrt{P_c V_c}\) Allocation?}
-To minimize estimator variance:
+\section{Optimal Allocation via \(\sqrt{P_c V_c}\)}
+To minimize the estimator variance:
 \[
-\mathrm{Var}(\hat{Y}) = \sum_c \frac{P_c^2 V_c}{N_c}
-\quad \text{subject to} \quad \sum_c N_c = N.
+\mathrm{Var}(\hat{Y}) = \sum_{c=1}^{n_c} \frac{P_c^2 V_c}{N_c}, \quad \text{subject to} \quad \sum_{c=1}^{n_c} N_c = N,
 \]
-Using Lagrange multipliers, the optimal allocation satisfies:
+the optimal allocation is:
 \[
 N_c \propto P_c \sqrt{V_c} \quad \Rightarrow \quad \text{weights} \propto \sqrt{P_c V_c}.
 \]
 
-\section{Unbiasedness}
-Each level estimator:
+\section{Estimator Properties}
+Each cluster-wise estimator
 \[
-\hat{Y}_\ell = \frac{1}{N_\ell} \sum_{i=1}^{N_\ell} Y_{\ell,i}
+\hat{Y}_{\ell,c} = \frac{S_{\ell,c}}{N_{\ell,c}}
 \]
-is an unbiased estimate of \( \mathbb{E}[\Delta P_\ell] \), since stratified sampling preserves marginal distributions. The full estimator:
+is unbiased for its conditional mean, and the full estimator
 \[
-\hat{P} = \sum_{\ell=0}^L \hat{Y}_\ell
+\hat{P} = \sum_{\ell=0}^L \hat{Y}_\ell, \quad \hat{Y}_\ell = 
+\begin{cases}
+\frac{1}{N_0} \sum_{i=1}^{N_0} Y_{0,i}, & \ell = 0, \\
+\sum_{c=1}^{n_c} \frac{S_{\ell,c}}{N_{\ell,c}}, & \ell \ge 1
+\end{cases}
 \]
-is unbiased for \( \mathbb{E}[P_L] \), with bias \( \mathbb{E}[P - P_L] \) controlled via extrapolation.
+is an unbiased estimator of \( \mathbb{E}[P_L] \). Bias \( \mathbb{E}[P - P_L] \) is controlled via extrapolation on the last levels.
 
 \section{Conclusion}
-C-MLMC enhances classical MLMC by identifying and focusing computation on variance-dominant clusters. The allocation \( \propto \sqrt{P_c V_c} \) provides a provably efficient strategy to reduce variance while retaining unbiasedness and convergence guarantees. The result is a more robust and scalable Monte Carlo estimator for path-dependent problems.
+C-MLMC enhances standard MLMC by stratifying variance-heavy simulations via clustering and allocating samples proportionally to \( \sqrt{P_c V_c} \). This stratified estimator preserves unbiasedness while improving computational efficiency in high-variance regimes.
 
 \end{document}
