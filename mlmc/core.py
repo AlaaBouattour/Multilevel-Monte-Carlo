@@ -102,11 +102,6 @@ class MLMC:
         price = np.sum(suml[0] / Nl)
         return price, Nl.astype(int), Cl, costl.sum()
 
-
-import numpy as np
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
-
 class C_MLMC:
     """Clustered Multilevel Monte Carlo with proper stratified sampling."""
 
