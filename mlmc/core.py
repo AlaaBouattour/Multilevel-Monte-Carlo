@@ -2,6 +2,7 @@ from __future__ import annotations
 import numpy as np
 import math
 from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 
 
 class WeakConvergenceError(RuntimeError):
@@ -118,6 +119,7 @@ class C_MLMC:
         n_clusters: int = 4,
         N0: int = 1000,
         theta: float = 0.25,
+        scale_features: bool = True,
     ):
         if Lmin < 2 or Lmax < Lmin:
             raise ValueError("Need Lmin ≥ 2 and Lmax ≥ Lmin")
@@ -128,6 +130,8 @@ class C_MLMC:
         self.Lmin, self.Lmax = Lmin, Lmax
         self.alpha0, self.beta0, self.gamma0 = alpha0, beta0, gamma0
         self.theta = theta
+        self.scale_features = scale_features
+        self.scalers = [None] * (self.Lmax + 1) if scale_features else None
 
     def estimate(self, eps: float):
         alpha = max(0, self.alpha0)
@@ -153,10 +157,13 @@ class C_MLMC:
                 costl[l] = cost
                 continue
 
-            feats = np.vstack([
-                self.feature_fn(d) if 'S_coarse' not in d else np.array([d['S_fine'] - d['S_coarse']])
-                for d in details
-            ])
+            feats = np.vstack([self.feature_fn(d) for d in details])
+
+            if self.scale_features:
+                scaler = StandardScaler()
+                feats = scaler.fit_transform(feats)
+                self.scalers[l] = scaler
+
             km = KMeans(n_clusters=self.n_clusters).fit(feats)
             labels = km.predict(feats)
 
@@ -164,18 +171,14 @@ class C_MLMC:
                 np.var(Y_arr[labels == c], ddof=1) if np.any(labels == c) else 0.0
                 for c in range(self.n_clusters)
             ])
-            Pc = np.array([
-                np.mean(labels == c) for c in range(self.n_clusters)
-            ])
-            mu_c = np.array([
-                Y_arr[labels == c].mean() if np.any(labels == c) else 0.0
-                for c in range(self.n_clusters)
-            ])
+            Pc = np.array([np.mean(labels == c) for c in range(self.n_clusters)])
 
-            suml[0, l] = np.sum(Pc * mu_c)
-            suml[1, l] = np.sum([
-                np.sum(Y_arr[labels == c] ** 2) for c in range(self.n_clusters)
-            ])
+            Vc = np.clip(Vc, 1e-6, None)
+            Pc = np.clip(Pc, 1e-6, None)
+            Pc /= Pc.sum()
+
+            suml[0, l] = Y_arr.sum()
+            suml[1, l] = (Y_arr ** 2).sum()
             Nl[l] = self.N0
             costl[l] = cost
 
@@ -222,11 +225,7 @@ class C_MLMC:
                     costl = np.append(costl, 0.0)
 
                     Y_arr, details, cost = self._f(L, self.N0, return_details=True)
-
-                    feats = np.vstack([
-                        self.feature_fn(d) if 'S_coarse' not in d else np.array([d['S_fine'] - d['S_coarse']])
-                        for d in details
-                    ])
+                    feats = np.vstack([self.feature_fn(d) for d in details])
                     km = KMeans(n_clusters=self.n_clusters).fit(feats)
                     labels = km.predict(feats)
 
@@ -234,18 +233,14 @@ class C_MLMC:
                         np.var(Y_arr[labels == c], ddof=1) if np.any(labels == c) else 0.0
                         for c in range(self.n_clusters)
                     ])
-                    Pc = np.array([
-                        np.mean(labels == c) for c in range(self.n_clusters)
-                    ])
-                    mu_c = np.array([
-                        Y_arr[labels == c].mean() if np.any(labels == c) else 0.0
-                        for c in range(self.n_clusters)
-                    ])
+                    Pc = np.array([np.mean(labels == c) for c in range(self.n_clusters)])
 
-                    suml[0, L] = np.sum(Pc * mu_c)
-                    suml[1, L] = np.sum([
-                        np.sum(Y_arr[labels == c] ** 2) for c in range(self.n_clusters)
-                    ])
+                    Vc = np.clip(Vc, 1e-12, None)
+                    Pc = np.clip(Pc, 1e-12, None)
+                    Pc /= Pc.sum()
+
+                    suml[0, L] = Y_arr.sum()
+                    suml[1, L] = (Y_arr ** 2).sum()
                     Nl[L] = self.N0
                     costl[L] = cost
 
@@ -272,39 +267,62 @@ class C_MLMC:
                 Vc = self.cluster_vars[l]
                 Pc = self.cluster_probs[l]
                 weights = np.sqrt(Vc * Pc)
+                if not np.isfinite(weights).all() or weights.sum() == 0:
+                    weights = np.ones_like(weights)
                 weights /= weights.sum()
+
                 alloc = np.floor(n_add * weights).astype(int)
                 alloc[-1] += n_add - alloc.sum()
 
                 needed = alloc.copy()
                 collected = [[] for _ in range(self.n_clusters)]
                 cost_total = 0
+                max_iter = 30
+                iter_count = 0
 
-                while needed.sum() > 0:
+                while needed.sum() > 0 and iter_count < max_iter:
                     Y_arr, details, cost_b = self._f(l, self.N0, return_details=True)
-                    feats = np.vstack([
-                        self.feature_fn(d) if 'S_coarse' not in d else np.array([d['S_fine'] - d['S_coarse']])
-                        for d in details
-                    ])
+                    feats = np.vstack([self.feature_fn(d) for d in details])
                     labs = km.predict(feats)
                     for y, lab in zip(Y_arr, labs):
                         if needed[lab] > 0:
                             collected[lab].append(y)
                             needed[lab] -= 1
                     cost_total += cost_b
+                    iter_count += 1
 
-                mu_c = np.zeros(self.n_clusters)
-                n_c = np.zeros(self.n_clusters)
+                if needed.sum() > 0:
+                    print(f"[Warning] Not enough samples collected for level {l} after {max_iter} iterations.")
+
                 for c in range(self.n_clusters):
                     y = np.array(collected[c])
                     if len(y) > 0:
-                        mu_c[c] = y.mean()
-                        n_c[c] = len(y)
+                        suml[0, l] += y.sum()
                         suml[1, l] += (y ** 2).sum()
+                        Nl[l] += len(y)
 
-                suml[0, l] += np.sum(Pc * mu_c)
-                Nl[l] += n_c.sum()
                 costl[l] += cost_total
 
-        price = np.sum(suml[0] / Nl)
+        price = sum(
+            np.sum(self.cluster_probs[l] * (suml[0, l] / Nl[l])) if l > 0 else suml[0, l] / Nl[l]
+            for l in range(L + 1)
+        )
         return price, Nl.astype(int), Cl, costl.sum()
+
+    def get_cluster_info(self, level: int):
+        if level < 0 or level > self.Lmax:
+            raise ValueError(f"Level must be between 0 and {self.Lmax}.")
+
+        km = self.kmeans_levels[level]
+        pc = self.cluster_probs[level]
+        vc = self.cluster_vars[level]
+
+        if km is None or pc is None or vc is None:
+            raise ValueError(f"No cluster info available at level {level}. Did you run `.estimate()`?")
+
+        return {
+            "centers": km.cluster_centers_,
+            "probs": pc,
+            "vars": vc
+        }
+

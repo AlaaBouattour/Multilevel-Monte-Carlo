@@ -1,4 +1,3 @@
-"""Black‑Scholes tools for MLMC."""
 import numpy as np, math
 from typing import Callable
 
@@ -14,8 +13,6 @@ def bs_exact_call(S0, K, r, sigma, T):
 
 def bs_exact_put(S0, K, r, sigma, T):
     return bs_exact_call(S0, K, r, sigma, T) - S0 + K*math.exp(-r*T)
-
-# low‑level Y_l generators 
 
 class BSLevelFunction:
     def __init__(self, S0: float, r: float, sigma: float, T: float, payoff: Callable[[np.ndarray], np.ndarray],verbose=True):
