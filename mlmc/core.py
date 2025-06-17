@@ -197,7 +197,6 @@ class C_MLMC:
             self.cluster_sums[l] = np.array(sums)
             self.cluster_counts[l] = np.array(counts)
 
-        # === Iterative refinement ===
         while True:
             ml = np.abs(suml[0] / Nl)
             Vl = np.maximum(0.0, suml[1] / Nl - (suml[0] / Nl) ** 2)
@@ -224,14 +223,12 @@ class C_MLMC:
             dNl = np.maximum(0, Ns - Nl)
 
             if (dNl > 0.01 * Nl).sum() == 0:
-                # Check bias
                 tail = np.array([L - i for i in range(min(3, L + 1))])
                 extrapolated = ml[tail] * 2 ** (np.arange(len(tail)) * alpha)
                 remainder = np.max(extrapolated) / (2 ** alpha - 1)
                 if remainder > np.sqrt(self.theta) * eps:
                     if L == self.Lmax:
                         raise RuntimeError("Increase Lmax to reach tolerance")
-                    # Add new level
                     L += 1
                     Nl = np.append(Nl, 0.0)
                     suml = np.column_stack([suml, [0.0, 0.0]])
@@ -276,7 +273,6 @@ class C_MLMC:
                     continue
                 break
 
-            # === Reallocation ===
             for l in range(L + 1):
                 if dNl[l] <= 0:
                     continue
@@ -292,7 +288,7 @@ class C_MLMC:
                 km = self.kmeans_levels[l]
                 Vc = self.cluster_vars[l]
                 Pc = self.cluster_probs[l]
-                weights = np.sqrt(Vc * Pc)
+                weights = Pc * np.sqrt(Vc)
                 weights /= weights.sum()
                 alloc = np.floor(n_add * weights).astype(int)
                 alloc[-1] += n_add - alloc.sum()
@@ -332,12 +328,14 @@ class C_MLMC:
                 Nl[l] += total_new
                 costl[l] += cost_total
 
-        # === Final price ===
+        # === Final price (corrected version) ===
         price = suml[0, 0] / Nl[0]
         for l in range(1, L + 1):
-            total = self.cluster_counts[l].sum()
-            if total > 0:
-                price += self.cluster_sums[l].sum() / total
+            S_lc = self.cluster_sums[l]
+            N_lc = self.cluster_counts[l]
+            P_lc = self.cluster_probs[l]
+            mask = N_lc > 0
+            price += np.sum((S_lc[mask] / N_lc[mask]) * P_lc[mask])
 
         return price, Nl.astype(int), Cl, costl.sum()
 
