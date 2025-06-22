@@ -9,6 +9,7 @@
 \usepackage{booktabs}
 \usepackage{hyperref}
 \usepackage{bm}
+\usepackage{bbm} % Pour \mathbbm{1}
 
 \title{Clustered Multilevel Monte Carlo (C-MLMC)}
 \date{\today}
@@ -40,76 +41,69 @@ When the variance is concentrated in rare modes of the input space, uniform samp
   \item Extracting features from simulation details,
   \item Clustering samples via K-means into \( n_c \) variance modes,
   \item Estimating per-cluster statistics \( (P_{\ell,c}, V_{\ell,c}) \),
-  \item Allocating samples proportional to \( \sqrt{P_{\ell,c} V_{\ell,c}} \).
+  \item Allocating samples proportionally to \( \sqrt{P_{\ell,c} V_{\ell,c}} \).
 \end{itemize}
 
-\section{C-MLMC Algorithm}
 \begin{algorithm}[H]
-\caption{Clustered MLMC Estimator}
-\label{alg:cmlmc}
-\begin{algorithmic}[1]
-\REQUIRE Simulator \( f(\ell, N, \texttt{return\_details}) \), feature extractor \( \varphi \), tolerance \( \varepsilon \), pilot size \( N_0 \), clusters \( n_c \)
-\STATE Initialize level count \( L \leftarrow L_{\min} \), precision control \( \theta \in (0,1) \)
-\FOR{each level \( \ell \le L \)}
-    \STATE Run pilot: simulate \( \{(Y_i, d_i)\}_{i=1}^{N_0} \leftarrow f(\ell, N_0, \texttt{true}) \)
-    \STATE Extract features: \( \phi_i \leftarrow \varphi(d_i) \)
-    \STATE Cluster \( \{\phi_i\} \) into \( n_c \) clusters using K-means
-    \STATE Compute:
-    \[
-    P_{\ell,c} = \frac{\#\{\text{samples in cluster } c\}}{N_0}, \quad
-    V_{\ell,c} = \mathrm{Var}\left(Y_i \mid \phi_i \in \text{cluster } c\right)
-    \]
-    \STATE Store cluster-wise sums \( S_{\ell,c} = \sum Y_i \), and counts \( N_{\ell,c} \)
-\ENDFOR
-
-\WHILE{not converged}
-    \STATE Aggregate level stats: \( V_\ell = \sum_{c=1}^{n_c} P_{\ell,c} V_{\ell,c} \), \( C_\ell = \frac{\text{total cost}}{N_\ell} \)
-    \STATE Allocate level-wise samples: \( N_\ell \propto \sqrt{V_\ell / C_\ell} \)
-    \STATE Allocate cluster-wise samples:
-    \[
-    N_{\ell,c} \propto \sqrt{P_{\ell,c} V_{\ell,c}} \quad \text{s.t.} \quad \sum_c N_{\ell,c} = N_\ell
-    \]
-    \FOR{each level \( \ell > 0 \), cluster \( c \)}
-        \STATE Sample until \( N_{\ell,c} \) accepted samples with cluster label \( c \)
-        \STATE Accumulate cluster sum \( S_{\ell,c} \leftarrow S_{\ell,c} + \sum Y_i \)
-        \STATE Update counts \( N_{\ell,c} \leftarrow N_{\ell,c} + \#\text{new samples} \)
+    \caption{Stratified Clustered MLMC Estimator}
+    \label{alg:strat-cmlmc}
+    \begin{algorithmic}[1]
+    \REQUIRE Simulator \( f(\ell, N, \texttt{return\_details}) \), feature extractor \( \varphi \), tolerance \( \varepsilon \), pilot size \( N_0 \), number of clusters \( n_c \)
+    \STATE Initialize level count \( L \leftarrow L_{\min} \), precision parameter \( \theta \in (0,1) \)
+    \FOR{each level \( \ell \in \{0, \dots, L\} \)}
+        \STATE Run pilot: simulate \( \{(Y_i, d_i)\}_{i=1}^{N_0} \leftarrow f(\ell, N_0, \texttt{true}) \)
+        \IF{\( \ell > 0 \)}
+            \STATE Extract features: \( \phi_i \leftarrow \varphi(d_i) \)
+            \STATE Cluster \( \{\phi_i\} \) into \( n_c \) clusters using K-means
+            \STATE For each cluster \( c \in \{1,\dots,n_c\} \), compute:
+            \[
+            P_{\ell,c} = \frac{\sum_{i=1}^{N_0} \mathbbm{1}_{\{\phi_i \in c\}}}{N_0}, \quad
+            V_{\ell,c} = \mathrm{Var}\left(Y_i \mid \phi_i \in c\right)
+            \]
+        \ELSE
+            \STATE Estimate global variance: \( V_0 = \mathrm{Var}(Y_i) \)
+        \ENDIF
     \ENDFOR
-    \STATE Bias check: extrapolate tail bias using \( \widehat{\mathbb{E}}[\Delta P_\ell] \sim \mathcal{O}(2^{-\alpha \ell}) \); if large, increment \( L \)
-\ENDWHILE
-
-\STATE Final estimator:
-\[
-\hat{P} = \frac{1}{N_0} \sum_{i=1}^{N_0} Y_{0,i} + \sum_{\ell = 1}^{L} \sum_{c=1}^{n_c} \frac{S_{\ell,c}}{N_{\ell,c}}
-\]
-\end{algorithmic}
-\end{algorithm}
-
-\section{Optimal Allocation via \(\sqrt{P_c V_c}\)}
-To minimize the estimator variance:
-\[
-\mathrm{Var}(\hat{Y}) = \sum_{c=1}^{n_c} \frac{P_c^2 V_c}{N_c}, \quad \text{subject to} \quad \sum_{c=1}^{n_c} N_c = N,
-\]
-the optimal allocation is:
-\[
-N_c \propto P_c \sqrt{V_c} \quad \Rightarrow \quad \text{weights} \propto \sqrt{P_c V_c}.
-\]
-
-\section{Estimator Properties}
-Each cluster-wise estimator
-\[
-\hat{Y}_{\ell,c} = \frac{S_{\ell,c}}{N_{\ell,c}}
-\]
-is unbiased for its conditional mean, and the full estimator
-\[
-\hat{P} = \sum_{\ell=0}^L \hat{Y}_\ell, \quad \hat{Y}_\ell = 
-\begin{cases}
-\frac{1}{N_0} \sum_{i=1}^{N_0} Y_{0,i}, & \ell = 0, \\
-\sum_{c=1}^{n_c} \frac{S_{\ell,c}}{N_{\ell,c}}, & \ell \ge 1
-\end{cases}
-\]
-is an unbiased estimator of \( \mathbb{E}[P_L] \). Bias \( \mathbb{E}[P - P_L] \) is controlled via extrapolation on the last levels.
-
-\section{Conclusion}
-C-MLMC enhances standard MLMC by stratifying variance-heavy simulations via clustering and allocating samples proportionally to \( \sqrt{P_c V_c} \). This stratified estimator preserves unbiasedness while improving computational efficiency in high-variance regimes.
+    
+    \WHILE{not converged}
+        \FOR{each level \( \ell > 0 \)}
+            \STATE Compute per-cluster sample allocations:
+            \[
+            N_{\ell,c} \propto P_{\ell,c} \sqrt{V_{\ell,c}}, \quad \text{and normalize such that } \sum_{c=1}^{n_c} N_{\ell,c} = N_\ell
+            \]
+            \STATE Estimate cost per sample \( C_\ell \gets \texttt{estimated from runtime or set a priori} \)
+            \STATE Compute aggregated variance: \( V_\ell = \sum_{c=1}^{n_c} \frac{P_{\ell,c}^2 V_{\ell,c}}{N_{\ell,c}} \)
+        \ENDFOR
+        \STATE Compute total variance target:
+        \[
+        \sum_{\ell=0}^L V_\ell \le \theta^2 \varepsilon^2
+        \]
+        \STATE For level \( \ell = 0 \): increase \( N_0 \) if needed and update \( V_0 \)
+        \STATE Estimate total bias from finest levels (e.g., regression fit \( |\mathbb{E}[\Delta P_\ell]| \sim \mathcal{O}(2^{-\alpha \ell}) \))
+        \IF{estimated bias \( > (1 - \theta)^2 \varepsilon^2 \)}
+            \STATE Increase level count: \( L \leftarrow L + 1 \), and perform pilot on new level
+        \ELSE
+            \STATE \textbf{break}
+        \ENDIF
+    \ENDWHILE
+    
+    \FOR{each level \( \ell \)}
+        \IF{\( \ell > 0 \)}
+            \FOR{each cluster \( c \)}
+                \STATE Sample \( N_{\ell,c} \) new paths with cluster label \( c \)
+                \STATE Compute sample mean: \( \hat{\mu}_{\ell,c} = \frac{1}{N_{\ell,c}} \sum Y_i^{(c)} \)
+            \ENDFOR
+            \STATE Compute level mean:
+            \[
+            \hat{\mu}_\ell = \sum_{c=1}^{n_c} P_{\ell,c} \hat{\mu}_{\ell,c}
+            \]
+        \ELSE
+            \STATE Estimate level mean: \( \hat{\mu}_0 = \frac{1}{N_0} \sum_{i=1}^{N_0} Y_i \)
+        \ENDIF
+    \ENDFOR
+    
+    \STATE \textbf{Return:} Estimator \( \hat{P} = \sum_{\ell=0}^L \hat{\mu}_\ell \)
+    \end{algorithmic}
+    \end{algorithm}
 
 \end{document}
